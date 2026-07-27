@@ -122,7 +122,16 @@ if ($jnPatched -ne $code) { Write-Host "      [OK] jn() patched (extension ID ch
 else                       { Write-Host "      [WARN] jn() pattern not found" }
 $code = $jnPatched
 
+# 4d. Patch qn=!0 - the real cooldown bypass
+# JWT injection (above) only affects UI; qn=!0 makes Py() return true immediately,
+# skipping JWT signature validation and bypassing the 7200s download cooldown.
+$qnPatched = $code.Replace('qn=!1', 'qn=!0')
+if ($qnPatched -ne $code) { Write-Host "      [OK] qn=!0 patched (real cooldown bypass)" }
+else                       { Write-Host "      [WARN] qn=!1 not found - may already be patched" }
+$code = $qnPatched
+
 [IO.File]::WriteAllText($serviceFile, $code)
+
 
 # ── STEP 5: Patch factory/factory.js ─────────────────────────────────────
 $factoryFile = Join-Path $OUTPUT_DIR 'factory\factory.js'
