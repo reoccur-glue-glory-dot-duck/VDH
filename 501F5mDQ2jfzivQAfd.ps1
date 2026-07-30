@@ -107,28 +107,38 @@ $code = $patched
 $fakeJwtObj = '{"store":"google","entitlement_type":"LIFETIME","valid_until":9999999999,' +
               '"exp":9999999999,"developer":false,"user_id":1,' +
               '"jti":"patched-lifetime-jti","iat":0,"raw":"' + $jwt + '"}'
-$oldYb = 'async function yb(){let e=await Dn.storage.local.get(us);if(us in e){let t=e[us];return fb(Ae(t))}return b_()}'
-$newYb = 'async function yb(){let e=await Dn.storage.local.get(us);let _s;if(us in e){let t=e[us];_s=fb(Ae(t))}else{_s=b_()};if(!_s.jwt){_s.jwt=' + $fakeJwtObj + '};return _s}'
+# 4b. Patch yb() to auto-inject signed JWT on first launch
+# yb() reads persistent state from storage; we inject our JWT if none exists
+$fakeJwtObj = '{"store":"google","entitlement_type":"LIFETIME","valid_until":9999999999,' +
+              '"exp":9999999999,"developer":false,"user_id":1,' +
+              '"jti":"patched-lifetime-jti","iat":0,"raw":"' + $jwt + '"}'
+$oldYb = 'async function yb(){let e=await xn.storage[bb].get(as);if(as in e){let t=e[as];return Ee(t)}else return Wn()}'
+$newYb = 'async function yb(){let e=await xn.storage[bb].get(as);let _s;if(as in e){let t=e[as];_s=Ee(t)}else{_s=Wn()};if(!_s.jwt){_s.jwt=' + $fakeJwtObj + '};return _s}'
 if ($code.Contains($oldYb)) {
     $code = $code.Replace($oldYb, $newYb)
     Write-Host "      [OK] yb() patched - signed JWT will auto-inject on first launch"
 } else {
-    Write-Host "      [WARN] yb() pattern not found - JWT injection skipped"
+    Write-Error "yb() pattern not found - the extension code format has changed!"
+    exit 1
 }
 
-# 4c. Patch jn() - bypass extension ID verification
-$jnPatched = [regex]::Replace($code, 'function jn\(\)\{let e=je\([^)]+\);return fm[^}]+\}', 'function jn(){return!0}')
-if ($jnPatched -ne $code) { Write-Host "      [OK] jn() patched (extension ID check bypassed)" }
-else                       { Write-Host "      [WARN] jn() pattern not found" }
-$code = $jnPatched
-
-# 4d. Patch qn=!0 - the real cooldown bypass
-# JWT injection (above) only affects UI; qn=!0 makes Py() return true immediately,
-# skipping JWT signature validation and bypassing the 7200s download cooldown.
-$qnPatched = $code.Replace('qn=!1', 'qn=!0')
-if ($qnPatched -ne $code) { Write-Host "      [OK] qn=!0 patched (real cooldown bypass)" }
-else                       { Write-Host "      [WARN] qn=!1 not found - may already be patched" }
+# 4c. Patch qn() - bypass extension ID verification (service/main.js)
+$qnPatched = [regex]::Replace($code, 'function qn\(\)\{let e=Ue\([^)]+\);return hm[^}]+\}', 'function qn(){return!0}')
+if ($qnPatched -ne $code) { Write-Host "      [OK] qn() patched (extension ID check bypassed)" }
+else                       {
+    Write-Error "qn() ID check pattern not found - the extension code format has changed!"
+    exit 1
+}
 $code = $qnPatched
+
+# 4d. Patch jn=!0 - the real cooldown bypass in 10.5.24.2_0+
+if ($code.Contains('jn=!1')) {
+    $code = $code.Replace('jn=!1', 'jn=!0')
+    Write-Host "      [OK] jn=!0 patched (real cooldown bypass)"
+} else {
+    Write-Error "jn=!1 pattern not found - the cooldown mechanism has changed!"
+    exit 1
+}
 
 [IO.File]::WriteAllText($serviceFile, $code)
 
@@ -142,10 +152,12 @@ if (Test-Path $factoryFile) {
         [IO.File]::WriteAllText($factoryFile, $fcFixed)
         Write-Host "      [OK] F() in factory/factory.js patched"
     } else {
-        Write-Host "      [WARN] F() pattern not found in factory/factory.js"
+        Write-Error "F() pattern not found in factory/factory.js - the extension code format has changed!"
+        exit 1
     }
 } else {
-    Write-Host "      [INFO] factory/factory.js not found, skipping"
+    Write-Error "factory/factory.js not found!"
+    exit 1
 }
 
 # ── DONE ──────────────────────────────────────────────────────────────────
