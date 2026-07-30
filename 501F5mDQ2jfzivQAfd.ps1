@@ -97,9 +97,13 @@ $code = [IO.File]::ReadAllText($serviceFile)
 
 # 4a. Replace hardcoded VDH public key with our generated key
 $newPubKeyB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pubKeyPem))
-$patched = [regex]::Replace($code, 'rv=atob\("[A-Za-z0-9+/=]+"\)', "rv=atob(`"$newPubKeyB64`")")
-if ($patched -ne $code) { Write-Host "      [OK] Public key replaced in rv=atob()" }
-else                     { Write-Host "      [WARN] rv=atob() pattern not found" }
+$patched = [regex]::Replace($code, 'iv=atob\("[A-Za-z0-9+/=]+"\)', "iv=atob(`"$newPubKeyB64`")")
+if ($patched -ne $code) { 
+    Write-Host "      [OK] Public key replaced in iv=atob()" 
+} else { 
+    Write-Error "iv=atob() public key pattern not found - the extension code format has changed!" 
+    exit 1
+}
 $code = $patched
 
 # 4b. Patch yb() to auto-inject signed JWT on first launch
