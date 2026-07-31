@@ -82,7 +82,6 @@ $sigBytes    = $ecdsa.SignData([Text.Encoding]::UTF8.GetBytes("$headerB64.$paylo
 $jwt         = "$headerB64.$payloadB64.$(Base64UrlEncode $sigBytes)"
 
 Write-Host "      Signature: $($sigBytes.Length) bytes (expected 64)"
-Write-Host "      JWT: $($jwt.Substring(0, 60))..."
 
 # ── STEP 4: Patch service/main.js ────────────────────────────────────────
 Write-Host "[4/5] Patching service/main.js..."
@@ -95,52 +94,57 @@ if (-not (Test-Path $serviceFile)) {
 
 $code = [IO.File]::ReadAllText($serviceFile)
 
-# 4a. Replace hardcoded VDH public key with our generated key
-$newPubKeyB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pubKeyPem))
-$patched = [regex]::Replace($code, 'iv=atob\("[A-Za-z0-9+/=]+"\)', "iv=atob(`"$newPubKeyB64`")")
-if ($patched -ne $code) { 
-    Write-Host "      [OK] Public key replaced in iv=atob()" 
-} else { 
-    Write-Error "iv=atob() public key pattern not found - the extension code format has changed!" 
-    exit 1
-}
-$code = $patched
-
-# 4b. Patch yb() to auto-inject signed JWT on first launch
-# yb() reads persistent state from storage; we inject our JWT if none exists
-$fakeJwtObj = '{"store":"google","entitlement_type":"LIFETIME","valid_until":9999999999,' +
-              '"exp":9999999999,"developer":false,"user_id":1,' +
-              '"jti":"patched-lifetime-jti","iat":0,"raw":"' + $jwt + '"}'
-# 4b. Patch yb() to auto-inject signed JWT on first launch
-# yb() reads persistent state from storage; we inject our JWT if none exists
-$fakeJwtObj = '{"store":"google","entitlement_type":"LIFETIME","valid_until":9999999999,' +
-              '"exp":9999999999,"developer":false,"user_id":1,' +
-              '"jti":"patched-lifetime-jti","iat":0,"raw":"' + $jwt + '"}'
-$oldYb = 'async function yb(){let e=await xn.storage[bb].get(as);if(as in e){let t=e[as];return Ee(t)}else return Wn()}'
-$newYb = 'async function yb(){let e=await xn.storage[bb].get(as);let _s;if(as in e){let t=e[as];_s=Ee(t)}else{_s=Wn()};if(!_s.jwt){_s.jwt=' + $fakeJwtObj + '};return _s}'
-if ($code.Contains($oldYb)) {
-    $code = $code.Replace($oldYb, $newYb)
-    Write-Host "      [OK] yb() patched - signed JWT will auto-inject on first launch"
+# 4a. Cooldown Bypass (Structural Regex)
+# Anchor: hàm validate license có dạng async f(arg){if(FLAG)return!0;if(!arg)return!1
+$cooldownPat = 'async function\s+\w+\(\w+\)\{if\((\w+)\)return!0;if\(!\w+\)return!1'
+if ($code -match $cooldownPat) {
+    $cooldownVar = $Matches[1]
+    $cooldownTarget = "${cooldownVar}=!1"
+    if ($code.Contains($cooldownTarget)) {
+        $code = $code.Replace($cooldownTarget, "${cooldownVar}=!0")
+        Write-Host "      [OK] Cooldown bypass patched: ${cooldownVar}=!1 -> ${cooldownVar}=!0"
+    } else {
+        Write-Error "Cooldown target ${cooldownTarget} not found!"
+        exit 1
+    }
 } else {
-    Write-Error "yb() pattern not found - the extension code format has changed!"
+    Write-Error "Cooldown flag anchor function not found!"
     exit 1
 }
 
-# 4c. Patch qn() - bypass extension ID verification (service/main.js)
-$qnPatched = [regex]::Replace($code, 'function qn\(\)\{let e=Ue\([^)]+\);return hm[^}]+\}', 'function qn(){return!0}')
-if ($qnPatched -ne $code) { Write-Host "      [OK] qn() patched (extension ID check bypassed)" }
-else                       {
-    Write-Error "qn() ID check pattern not found - the extension code format has changed!"
-    exit 1
-}
-$code = $qnPatched
-
-# 4d. Patch jn=!0 - the real cooldown bypass in 10.5.24.2_0+
-if ($code.Contains('jn=!1')) {
-    $code = $code.Replace('jn=!1', 'jn=!0')
-    Write-Host "      [OK] jn=!0 patched (real cooldown bypass)"
+# 4b. Bypass Premium Verification Function (Ty)
+$tyPat = 'async function\s+(\w+)\((\w+)\)\{if\(\w+\)return!0;if\(!\2\)return!1;let\s+\w+=await\s+(\w+)\(\2\)'
+if ($code -match $tyPat) {
+    $tyFuncName = $Matches[1]
+    $tyArg      = $Matches[2]
+    $zFuncName  = $Matches[3]
+    $code = [regex]::Replace($code, $tyPat, "async function ${tyFuncName}(${tyArg}){if(!${tyArg})return!1;return!0;if(jn)return!0;let dummy=await ${zFuncName}(${tyArg})")
+    Write-Host "      [OK] Premium check function bypassed: ${tyFuncName}()"
 } else {
-    Write-Error "jn=!1 pattern not found - the cooldown mechanism has changed!"
+    Write-Error "Premium verification function (Ty) not found!"
+    exit 1
+}
+
+# 4c. Patch state getter dynamically to inject Premium JWT on runtime
+$fakeJwtState = '{"store":"MICROSOFT","entitlement_type":"LIFETIME","valid_until":9999999999,"exp":9999999999,"developer":false,"user_id":1,"jti":"patched","iat":0,"raw":"placeholder.placeholder."}'
+$jPat = 'function\s+(\w+)\(\)\{return\s+globalThis\._persistent_state\}'
+if ($code -match $jPat) {
+    $jFuncName = $Matches[1]
+    $code = [regex]::Replace($code, $jPat, "function ${jFuncName}(){if(globalThis._persistent_state&&!globalThis._persistent_state.jwt){globalThis._persistent_state.jwt=${fakeJwtState}};return globalThis._persistent_state}")
+    Write-Host "      [OK] State getter patched dynamically: ${jFuncName}()"
+} else {
+    Write-Error "State getter function returning globalThis._persistent_state not found!"
+    exit 1
+}
+
+# 4d. Patch ID check in service/main.js dynamically
+$idCheckPat = 'function\s+(\w+)\(\)\{[^{}]*return\s+\w+\|\|[^{}]*8817291756503653[^{}]*\}'
+if ($code -match $idCheckPat) {
+    $funcName = $Matches[1]
+    $code = [regex]::Replace($code, $idCheckPat, "function ${funcName}(){return!0}")
+    Write-Host "      [OK] ID check bypassed in service/main.js: ${funcName}()"
+} else {
+    Write-Error "ID check function not found in service/main.js!"
     exit 1
 }
 
@@ -150,18 +154,18 @@ if ($code.Contains('jn=!1')) {
 # ── STEP 5: Patch factory/factory.js ─────────────────────────────────────
 $factoryFile = Join-Path $OUTPUT_DIR 'factory\factory.js'
 if (Test-Path $factoryFile) {
-    $fc      = [IO.File]::ReadAllText($factoryFile)
-    $fcFixed = [regex]::Replace($fc, 'function F\(\)\{let g=M\([^)]+\);return U[^}]+\}', 'function F(){return!0}')
-    if ($fcFixed -ne $fc) {
+    $fc = [IO.File]::ReadAllText($factoryFile)
+    if ($fc -match $idCheckPat) {
+        $funcName = $Matches[1]
+        $fcFixed = [regex]::Replace($fc, $idCheckPat, "function ${funcName}(){return!0}")
         [IO.File]::WriteAllText($factoryFile, $fcFixed)
-        Write-Host "      [OK] F() in factory/factory.js patched"
+        Write-Host "      [OK] ID check bypassed in factory/factory.js: ${funcName}()"
     } else {
-        Write-Error "F() pattern not found in factory/factory.js - the extension code format has changed!"
+        Write-Error "ID check function not found in factory/factory.js!"
         exit 1
     }
 } else {
-    Write-Error "factory/factory.js not found!"
-    exit 1
+    Write-Host "      [INFO] factory/factory.js not found, skipping"
 }
 
 # ── DONE ──────────────────────────────────────────────────────────────────
